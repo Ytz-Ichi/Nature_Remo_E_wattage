@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>消費電力モニター</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a0a;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  #label {
+    font-size: 1.4rem;
+    color: #888;
+    margin-bottom: 0.5rem;
+    letter-spacing: 0.15em;
+  }
+
+  #power-display {
+    display: flex;
+    align-items: baseline;
+    gap: 0.3em;
+  }
+
+  #watt {
+    font-size: clamp(6rem, 18vw, 14rem);
+    font-weight: 200;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    color: #fff;
+    transition: color 0.3s;
+  }
+
+  #unit {
+    font-size: clamp(2rem, 5vw, 4rem);
+    font-weight: 300;
+    color: #666;
+  }
+
+  #status {
+    margin-top: 1.5rem;
+    font-size: 0.85rem;
+    color: #555;
+  }
+
+  #error {
+    display: none;
+    margin-top: 1rem;
+    font-size: 1.1rem;
+    color: #e55;
+    text-align: center;
+    max-width: 80vw;
+    line-height: 1.6;
+  }
+
+  #threshold-info {
+    position: fixed;
+    bottom: 1rem;
+    left: 1.5rem;
+    font-size: 0.7rem;
+    color: #444;
+  }
+
+  #settings {
+    position: fixed;
+    bottom: 1rem;
+    right: 1.5rem;
+    font-size: 0.75rem;
+    color: #444;
+  }
+  #settings label { margin-right: 0.3em; }
+  #settings select {
+    background: #1a1a1a;
+    color: #888;
+    border: 1px solid #333;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+  }
+
+  /* ---- 契約アンペア超過時の警告点滅 ---- */
+  .warn {
+    color: #ef5350 !important;
+    animation: blink-warn 0.8s ease-in-out infinite;
+  }
+  @keyframes blink-warn {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.2; }
+  }
+</style>
+</head>
+<body>
+
+<div id="label">現在の消費電力</div>
+<div id="power-display">
+  <span id="watt">---</span>
+  <span id="unit">W</span>
+</div>
+<div id="status">接続中...</div>
+<div id="error"></div>
+
+<div id="threshold-info"></div>
+
+<div id="settings">
+  <label>更新間隔</label>
+  <select id="interval">
+    <option value="5000">5秒</option>
+    <option value="10000" selected>10秒</option>
+    <option value="20000">20秒</option>
+    <option value="30000">30秒</option>
+  </select>
+</div>
+
+<script>
+  const elWatt      = document.getElementById("watt");
+  const elStatus    = document.getElementById("status");
+  const elError     = document.getElementById("error");
+  const elInterval  = document.getElementById("interval");
+  const elThreshold = document.getElementById("threshold-info");
+
+  let timerId    = null;
+  let lastWatt   = null;
+  let thresholdW = null;  // /config から取得
+  let rateLimitPaused = false;
+
+  // ---------- 起動時に /config を取得 ----------
+  async function loadConfig() {
+    try {
+      const res = await fetch("/config");
+      if (!res.ok) return;
+      const cfg = await res.json();
+      thresholdW = cfg.thresholdW;
+      elThreshold.textContent =
+        `契約: ${cfg.contractAmp}A / 警告: ${cfg.thresholdW.toLocaleString()}W`;
+    } catch (_) {
+      // 取得失敗時は警告機能なしで続行
+    }
+  }
+
+  // ---------- ユーティリティ ----------
+  function formatTime(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return d.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+
+  function formatEpoch(epoch) {
+    if (!epoch) return "";
+    const d = new Date(epoch * 1000);
+    return d.toLocaleString("ja-JP", {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
+  }
+
+  // ---------- 閾値判定 → warn クラス ----------
+  function applyWarnClass(watt) {
+    if (thresholdW != null && Number.isFinite(watt) && watt >= thresholdW) {
+      elWatt.classList.add("warn");
+    } else {
+      elWatt.classList.remove("warn");
+    }
+  }
+
+  // ---------- レート制限時のバックオフ ----------
+  function pauseUntilReset(resetEpoch) {
+    if (rateLimitPaused) return;
+    rateLimitPaused = true;
+
+    // ポーリング停止
+    if (timerId) { clearInterval(timerId); timerId = null; }
+
+    const waitMs = resetEpoch
+      ? Math.max((resetEpoch * 1000) - Date.now(), 5000)
+      : 60000;  // ヘッダなしなら60秒待機
+
+    setTimeout(() => {
+      rateLimitPaused = false;
+      hideError();
+      startPolling();
+    }, waitMs);
+  }
+
+  // ---------- メインの取得処理 ----------
+  async function fetchPower() {
+    if (rateLimitPaused) return;
+
+    try {
+      const res = await fetch("/power");
+      const data = await res.json();
+
+      if (!res.ok) {
+        // ---- 429 レート制限 ----
+        if (res.status === 429) {
+          let msg = data.error || "レート制限";
+          if (data.rateLimitReset) {
+            msg += "\n復帰予定: " + formatEpoch(data.rateLimitReset);
+          }
+          showError(msg);
+          pauseUntilReset(data.rateLimitReset);
+          return;
+        }
+        // ---- その他のエラー ----
+        showError(data.error || `HTTP ${res.status}`);
+        return;
+      }
+
+      hideError();
+
+      if (data.watt == null) {
+        elWatt.textContent = "未取得";
+        elWatt.style.color = "#888";
+        applyWarnClass(null);
+      } else {
+        lastWatt = data.watt;
+        elWatt.textContent = data.watt.toLocaleString();
+
+        // 電力レベルで色を変える（warn でなければ）
+        if (thresholdW != null && data.watt >= thresholdW) {
+          // warn クラスに任せる（色は CSS 側）
+        } else if (data.watt < 500) {
+          elWatt.style.color = "#4ecdc4";       // 低 - 青緑
+        } else if (data.watt < 1500) {
+          elWatt.style.color = "#f0f0f0";       // 中 - 白
+        } else if (data.watt < 3000) {
+          elWatt.style.color = "#ffa726";       // 高 - オレンジ
+        } else {
+          elWatt.style.color = "#ef5350";       // 非常に高 - 赤
+        }
+        applyWarnClass(data.watt);
+      }
+
+      const time = formatTime(data.updated_at);
+      elStatus.textContent = time
+        ? `最終更新: ${time}`
+        : `取得時刻: ${new Date().toLocaleTimeString("ja-JP")}`;
+
+    } catch (e) {
+      showError("通信エラー: サーバーに接続できません");
+    }
+  }
+
+  // ---------- エラー表示 ----------
+  function showError(msg) {
+    elError.textContent = msg;
+    elError.style.display = "block";
+    if (lastWatt == null) {
+      elWatt.textContent = "---";
+      elWatt.style.color = "#555";
+      applyWarnClass(null);
+    }
+  }
+
+  function hideError() {
+    elError.style.display = "none";
+  }
+
+  // ---------- ポーリング制御 ----------
+  function startPolling() {
+    if (timerId) clearInterval(timerId);
+    const ms = parseInt(elInterval.value, 10);
+    fetchPower();
+    timerId = setInterval(fetchPower, ms);
+  }
+
+  elInterval.addEventListener("change", startPolling);
+
+  // ---------- 起動 ----------
+  loadConfig().then(() => startPolling());
+</script>
+</body>
+</html>

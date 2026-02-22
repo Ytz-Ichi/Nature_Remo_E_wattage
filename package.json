@@ -1,0 +1,12 @@
+{
+  "name": "nature-remo-e-wattage",
+  "version": "1.0.0",
+  "description": "Nature Remo E2 lite 瞬時電力リアルタイム表示ダッシュボード",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
