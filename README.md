@@ -14,7 +14,7 @@ Nature Remo E2 lite（スマートメーター連携）から **瞬時電力（W
 
 | 項目 | 備考 |
 |------|------|
-| **Node.js** | v18 以上（組み込み `fetch` を使用）。LTS 推奨 |
+| **Node.js** | v20.6 以上（`--env-file` および組み込み `fetch` を使用）。LTS 推奨 |
 | **Nature Remo E / E2 lite** | スマートメーターと連携済みであること |
 | **API トークン** | Nature Developer で発行（後述） |
 
@@ -39,34 +39,27 @@ npm install
 2. 画面下部の **「Generate access token」** をクリック
 3. 発行されたトークンをコピー（**再表示できない**ので必ず控えてください）
 
-### 4. 環境変数を設定してサーバーを起動
+### 4. `.env` ファイルを作成してサーバーを起動
 
-**Windows PowerShell：**
-
-```powershell
-$env:NATURE_REMO_TOKEN = "ここにトークンを貼り付け"
-npm start
-```
-
-**Windows コマンドプロンプト：**
-
-```cmd
-set NATURE_REMO_TOKEN=ここにトークンを貼り付け
-npm start
-```
-
-**macOS / Linux：**
+`.env.example` を `.env` にコピーし、トークンを設定してください。
 
 ```bash
-export NATURE_REMO_TOKEN="ここにトークンを貼り付け"
+cp .env.example .env
+```
+
+`.env` を編集して `NATURE_REMO_TOKEN` にトークンを貼り付けます。
+
+```
+NATURE_REMO_TOKEN=ここにトークンを貼り付け
+```
+
+サーバーを起動します。`npm start` で `.env` が自動的に読み込まれます。
+
+```bash
 npm start
 ```
 
-> **`.env` ファイルを使う場合**
-> `.env.example` を `.env` にコピーして値を書き換えてください。
 > `.env` は `.gitignore` に含まれているため Git にはコミットされません。
-> ただし本アプリは dotenv を組み込んでいないため、
-> PowerShell なら `Get-Content .env | ForEach-Object { if ($_ -match '^([^#].+?)=(.*)$') { [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2]) } }` 等で読み込んでから `npm start` してください。
 
 ### 5. ブラウザで表示
 
@@ -89,8 +82,10 @@ http://localhost:3210
 | 50A | 4,250 W |
 | 60A | 5,100 W |
 
-```powershell
-$env:CONTRACT_AMP = "40"
+`.env` に以下を追加します。
+
+```
+CONTRACT_AMP=40
 ```
 
 `CONTRACT_AMP` が未設定・空・不正値の場合は **30A** が使われます。
@@ -99,8 +94,10 @@ $env:CONTRACT_AMP = "40"
 
 デフォルトは `3210` です。
 
-```powershell
-$env:PORT = "8080"
+`.env` に以下を追加します。
+
+```
+PORT=8080
 ```
 
 ### 更新間隔
